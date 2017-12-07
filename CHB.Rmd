@@ -1,0 +1,602 @@
+---
+title: "R Programming : Challenge B"
+author: "Cheimae Bahri Floriane Marty"
+output: pdf_document
+geometry: margin=0in
+---
+
+https://github.com/florianemarty/CHB
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+# Fancy code to load packages
+load.libraries <- c('tidyverse','np','stargazer','caret','data.table','stringr','knitr','ff','rmarkdown')
+install.lib <- load.libraries[!load.libraries %in% installed.packages()]
+for(libs in install.lib) install.packages(libs, dependencies = TRUE)
+sapply(load.libraries, require, character = TRUE)
+
+```
+
+## Predicting house prices in Ames, Iowa (continued)
+
+```{r 1CHA, results="hide" , message=FALSE} 
+# Code from Challenge A needed to do Challenge B
+
+
+# Load the data
+train <- read_csv("https://raw.githubusercontent.com/florianemarty/CHB/master/train.csv")
+test <- read_csv("https://raw.githubusercontent.com/florianemarty/CHB/master/test.csv")
+
+
+# remove variables with a lot of NA
+remove.vars <- train %>% summarise_all(.funs = funs(sum(is.na(.)))) %>% gather(key = "feature", value = "missing.observations") %>% filter(missing.observations > 100) %>% select(feature) %>% unlist
+
+train <- train %>% select(- one_of(remove.vars))
+
+# Remove observations with NA
+
+train %>% summarise_all(.funs = funs(sum(is.na(.)))) %>% gather(key = "feature", value = "missing.observations") %>% filter(missing.observations > 0)
+
+train <- train %>% filter(is.na(GarageType) == FALSE, is.na(MasVnrType) == FALSE, is.na(BsmtFinType2) == FALSE, is.na(BsmtExposure) == FALSE, is.na(Electrical) == FALSE)
+
+
+ 
+  # Take all the variables of the train dataframe with a class "character" 
+ character <- lapply(train,class) =="character"
+
+  #Replace the class of all the variables belonging to character defined above by "factor"
+ train[, character] <- lapply(train[, character], as.factor)
+
+```
+
+
+1. We chose a Non-parametric Kernel estimation with a local constant estimator. It works as follows : 
+The idea is to approximate the true function g(x) with the average of $y_i$ for $x_i$ at the neighborhood of x :
+* for each x ,it finds the  $x_i$ that are close to it and then it calculates the average $y_i$ of those $x_i$
+* Then it weights the importance of the $y_i$ according to the distance between the  $x_i$ and the x. (the bigger the distance between  $x_i$ and x is, the less it will weights)
+* Then the bandwidth controls how quickly we "remove" the weight.(it can also be seen as the  width of the neighborhood)
+
+i) For instance a really small bandwidth will remove quasi-instantanely the weight of a far $x_i$ and therefore the prediction will not perceive that this $x_i$ might be an extreme value.(over-fitting)
+
+ii) On the contrary a really high bandwidth will not take into account the extreme value (because they are so far that they will not weight anything). But it might in the same time smooth too much and therefore give are really biased prediction always over or under predicting. (under-fitting)
+
+* At this point, one should take into account the bias-variance trade-off. Indeed if one chooses a too large bandwidth, this will result in an under-fitted prediction, with a low variance but a high biais and if one chooses a too tiny bandwidth, this will result in an over-fitted prediction with a small biais but a high variance.
+The main problem of under-fitting is that it will not manage to retranscript the trend to correctly predict.
+Whereas the main problem of over-fitting is that the prediction will capture to much noise/fluctuation of the training data and therefore predict a really biased outcome on the testing data.
+
+
+
+```{r 1step2-bw , eval=FALSE}
+
+# Find the optimal bandwidth
+npregbw(SalePrice ~ MSZoning + LotArea + Neighborhood  + YearBuilt + OverallQual, data = train)
+
+system.time(npregbw(SalePrice ~ MSZoning + LotArea + Neighborhood  + YearBuilt + OverallQual, data = train))
+
+# as it takes (relatively : 601s evaluated by system.time) ages to compute : 
+#extract the optimal bandwith and do not evaluate the chunk :
+# Bandwidth(s) : 0.7348343   4351.206   0.5039706  2.211521  0.4686296
+
+```
+
+```{r 1step2 , results="hide"}
+
+# vector of optimal bandwidth :
+o.bws <- c(0.7348343, 4351.206  ,  0.5039706 , 2.211521  ,0.4686296)
+
+# Train the non parametric kernel regression with optimal bandwidth and constant linear estimator on the training data
+cl.fit <- npreg(SalePrice~ MSZoning + LotArea + Neighborhood  + YearBuilt + OverallQual , data= train , bws=o.bws)
+```
+
+
+
+3. Because the actual Sale Price is not available for the test data, it is not possible to say which predictions are the most accurate, nevertheless we can compare them (Results given in Table 3) :
+* We can see that the linear model predictions (lmp) and the non parametric model predictions (npmp) have approximately the same mean.
+* The lmp has a higher standard error than the npmp
+* By looking at the absolute value of the difference by observation which seem more relevant, we can see that on average the prediction varies from 15 739  dollar however the difference's standard error is relatively high : 16 551, which mean that the diffence are spread around the mean. 
+* There is only 25% of the observations that have a prediction differing by more than 21 446 dollar
+* Half of the predictions differs between 4851 and 21 446 dollar.
+
+```{r 1step3, results="hide"}
+## 3)
+ # Take all the variables of the test dataframe with a class "character" 
+ character <- lapply(test,class) =="character"
+
+  #Replace the class of all the variables belonging to character defined above by "factor"
+ test[, character] <- lapply(test[, character], as.factor)
+ 
+
+## i) Make predictions  on the test data
+sp.cl.fit <- predict(cl.fit, newdata=test )
+
+# Linear regression
+lm.fit <- lm(SalePrice ~ MSZoning + LotArea + Neighborhood  + YearBuilt + OverallQual, data = train)
+
+# predictions of the linear model on the test data
+sp.lm.fit <- predict(lm.fit, newdata = test)
+
+# create a data base with the Id and the linear model predictions
+df <- data.frame(test$Id,sp.lm.fit)
+
+# remove the non predicted observations
+df <- df[!is.na(sp.lm.fit),]
+
+# add the npk model prediction
+predictions <- cbind(df,sp.cl.fit)
+
+
+## ii) Compare the predictions
+
+predictions["diff"] <- abs(predictions$sp.cl.fit - predictions$sp.lm.fit)
+
+
+
+# get standard errors
+se.lm <- sqrt(var(predictions$sp.lm.fit))
+se.cl <- sqrt(var(predictions$sp.cl.fit))
+se.diff <- sqrt(var(predictions$diff))
+
+q3 <- matrix(c(se.lm,se.cl,se.diff),nrow=1, ncol=3)
+colnames(q3, do.NULL = FALSE)
+colnames(q3) <- c("lm","np-cl","diff")
+rownames(q3, do.NULL = FALSE)
+rownames(q3) <- c("se")
+
+```
+
+
+
+## Overfitting in Machine Learning (continued)
+```{r 2CHA , results="hide"}
+
+# Code from Challenge A needed to do Challenge B 
+
+set.seed(1)
+  #Simulate x and y
+x <- rnorm(150,0,1)
+
+e <- rnorm(150,0,1)
+
+y <- x^3+e
+
+y.true <- x^3
+
+# Store X and Y
+data <- data.frame(x,y,y.true)
+
+#Select an random sample of 80% of the population
+training_index <- createDataPartition(y , p=0.8, list = FALSE)
+
+  # Create the training set and the test set
+training <- slice(data,training_index) 
+testing <- slice(data,-training_index)
+```
+
+
+
+```{r 2step1}
+# 1)Train local linear model , 0.5 bandwidth
+ll.fit.lowflex <- npreg(y~x, method='ll', bws = .5, data = training )
+```
+
+```{r 2step2}
+# 2) Train local linear model , 0.01 bandwidth
+ll.fit.highflex <- npreg(y~x, method='ll', bws = .01, data = training )
+```
+
+3.
+Predictions of ll.fit.lowflex and ll.fit.highflex on training are represented in Figure 1
+
+```{r 2step3}
+## 3.1) predictions on traininng data
+y.ll.lowflex <- predict(ll.fit.lowflex, data=training)
+y.ll.highflex <- predict(ll.fit.highflex, data=training)
+
+```
+
+
+4.
+By looking at the graph, we notice that the prediction with high flexibility is more variable, hence (because it fits better the data) it is the least biased. We can confirm this by :
+```{r 2step4 , results="hide"}
+
+# Variance and Bias of high and low flexibility model on training data 
+bias.highflex <- abs(mean(y.ll.highflex-training$y))
+bias.lowflex <-abs(mean(y.ll.lowflex-training$y))
+var.highflex <- var(y.ll.highflex)
+var.lowflex <- var(y.ll.lowflex)
+
+# prepare a relatively nice output
+q4 <- matrix(c(var.highflex,bias.highflex,var.lowflex,bias.lowflex),nrow=2, ncol= 2)
+colnames(q4, do.NULL = FALSE)
+colnames(q4) <- c("High Flex","Low Flex")
+rownames(q4, do.NULL = FALSE)
+rownames(q4) <- c("Variance", "Bias")
+```
+
+
+```{r 2step4.2}
+# print on the Rmarkdown doc the relatively nice output
+kable(q4)
+```
+
+
+5.
+Predictions of ll.fit.lowflex and ll.fit.highflex on testing are represented in Figure 2. 
+
+By looking at the graph we can see that the "high flexiblity"" predictions are still the most variable, but they are now much more biased than the "low flexibility"" ones. We can confirm that by : 
+```{r 2step5, results="hide"}
+
+## 5.1)Predictions on testing data
+y.ll.lowflex.test <- predict(ll.fit.lowflex, newdata=testing)
+y.ll.highflex.test <- predict(ll.fit.highflex, newdata=testing)
+
+## 5.3) Variance and Bias of high and low flexibility model on testing data 
+bias.highflex.test <- abs(mean(y.ll.highflex.test-testing$y))
+bias.lowflex.test <-abs(mean(y.ll.lowflex.test-testing$y))
+
+var.highflex.test <- var(y.ll.highflex.test)
+var.lowflex.test <- var(y.ll.lowflex.test)
+
+# prepare a  nice output
+q5 <- matrix(c(var.highflex.test,bias.highflex.test,var.lowflex.test,bias.lowflex.test),nrow=2, ncol= 2)
+colnames(q5, do.NULL = FALSE)
+colnames(q5) <- c("High Flex","Low Flex")
+rownames(q5, do.NULL = FALSE)
+rownames(q5) <- c("Variance", "Bias")
+```
+
+```{r 2step5.2}
+# print on the Rmarkdown doc nice output
+kable(q5)
+```
+
+
+
+
+
+```{r 2step6}
+# 6)  Create vector (sequence) of bandwidth going from 0.01 to 0.5 with a step of 0.001
+bw <- seq(0.01, 0.5, by = 0.001)
+```
+
+
+
+
+
+```{r 2step7}
+# 7)  Train local linear model y ~ x on training with each bandwidth : 
+
+# Apply for each element of the bandwidth vector a local linear regression and stores it in llbw.fit
+llbw.fit <- lapply(X = bw, FUN = function(bw) {npreg(y ~ x,method = "ll",bws = bw, data = training)})
+
+
+```
+
+
+
+
+
+```{r 2step8}
+# 8) Compute for each bandwidth the MSE on the training data :
+
+## 8.1)  Create a Function that :
+# i) predict the fitted values of the training data 
+# ii) Add to the training data frame a column that gives for each observation the squared error 
+# iii) Compute the MSE of the training data 
+mse.training <- function(fit.model){
+  predictions <- predict(object = fit.model, newdata = training)
+  training %>% mutate(squared.error = (y - predictions)^2) %>% summarize(mse = mean(squared.error))
+}
+
+## 8.2) Apply the function mse.training on each type of local linear regression stored in llbw.fit 
+
+mse.training.results <- unlist(lapply(X = llbw.fit, FUN = mse.training))
+
+```
+
+
+
+
+
+```{r 2step9}
+# 9)  Compute for each bandwidth the MSE on the testing data : 
+
+## 9.1) Create a Function that :
+# i) predict the fitted values of the testing data 
+# ii) Add to the testing data frame a column that gives for each observation the squared error 
+# iii) Compute the MSE of the testing data 
+mse.testing <- function(fit.model){
+  predictions <- predict(object = fit.model, newdata = testing)
+  testing %>% mutate(squared.error = (y - predictions)^2) %>% summarize(mse = mean(squared.error))
+}
+
+## 8.2) Apply the function mse.testing on each type of local linear regression stored in llbw.fit 
+
+mse.testing.results <- unlist(lapply(X = llbw.fit, FUN = mse.testing))
+
+```
+
+
+10. Plot of the change of MSE on training data, and testing data as a function of bandwidth is given by Figure 3. We can see on the graph that :
+
+* Choosing a really small bandwidth may fit perfectly the training data but increases the  testing data MSE at its maximum : This is the problem of overfitting.
+* Instead it would be preferable to choose the bandwidth that minimizes the testing data MSE (and it seems to be possible as MSE.testing as a convex form for bandwidth $\in [0.01,0.5]$ ). Such a bandwidth is situated between 0.1 and 0.3 ( $bw^* \in [0.1,0.3]$)
+
+To conclude we can say that the problem of overfitting in machine learning is when you try to hard to fit your training data and manage to do so (hence you get for the training data a really small variance), but by doing so, you mispredict the testing data  (the estimator is biased) because the way of fitting you chose is too specific to the data you used on your training data. Therefore a good machine learning model is a one that can balance between bias and variance.
+
+```{r 2step10}
+## 10.1) Create a data frame with nrow = 491 (number of different bandwidth created by bw ), ncol = 3  (bandwidth, MSE of training data for this bandwidth , MSE of testing data for this bandwidth)
+mse.df <- tbl_df(data.frame(bandwidth = bw, mse.training = mse.training.results, mse.testing = mse.testing.results))
+
+```
+
+## Privacy regulation compliance in France
+```{r 3step1, results="hide"}
+## 1) Import the CNIL dataset from the Open Data Portal
+
+data <- fread('https://www.data.gouv.fr/s/resources/correspondants-informatique-et-libertes-cil/20171115-183631/OpenCNIL_Organismes_avec_CIL_VD_20171115.csv')
+
+
+# Time
+# utilisateur     système      écoulé 
+#     0.076       0.035       1.262 
+
+```
+
+2. The table representing the number of organizations that has nominated a CNIL per department is given by Table 4.
+
+```{r 3step2, results="hide"}
+# Créate a variable Département 
+Département <- str_sub(data$Code_Postal, start = 1, end = 2)
+
+# Include it in the Data table
+CNIL <- cbind(data,Département)
+
+
+# Convert the Variable Département as a catégorical variable
+CNIL <- CNIL[, Département:=as.factor(Département)]
+
+# Give the table of number of organizations that has nominated CNIL by Department
+ObyD <- CNIL %>%  group_by(Département) %>% summarise(no_rows = length(Département))
+
+# remove ugly data
+ObyD <- ObyD[3:109,]
+ObyD <- ObyD[1:97,]
+
+#transpose
+ObyD <- t(ObyD)
+
+row.names(ObyD) <- c("Département","Nbr Org")
+
+# change the name of SIREN to match with the other data tables
+setnames(CNIL,"Siren","SIREN")
+
+# Define the column SIREN as key
+setkey(CNIL, SIREN)
+
+```
+
+
+3. The plan is :
+i) As importing the hole 8GB data would have taken a lot of time and would have frozen the computer : Import smaller data sets by separating the almost 11 billion rows into 5 smaller data sets.
+
+ii) For each smaller dataset order them first by SIREN then by date of update then remove the duplicate in order to let the latest update  and change the class of SIREN to integer to match with the CNIL Data table
+
+iii) Only keep the rows of organizations that are in the CNIL Data table
+
+iv) Bind the small data sets into one that have a "normal" size  
+
+v) export this data set and include it on the GitHub repo to use it on step 3 and 4. 
+
+(Time spend running the hole chunk (3step3-db): 22.77081 mins)
+
+```{r 3step3-db, eval=FALSE}
+
+begining <- Sys.time()
+## Sub-set 1
+#i)
+SIREN1 <- fread(file="~/rprog/sirc-17804_9075_14209_201710_L_M_20171101_030132835.csv",sep=';',fill=TRUE , header=TRUE,nrows = 2500000)
+## Read 2500000 rows and 100 (of 100) columns from 8.068 GB file in 00:01:29
+
+#ii)
+SIREN1 <- SIREN1[order(SIREN,DATEMAJ)][!duplicated(SIREN, fromLast = TRUE)][,SIREN:= as.integer(SIREN)]
+
+
+#iii)
+setkey(SIREN1, SIREN)
+SIREN1 <- SIREN1[SIREN1$SIREN %in% CNIL$SIREN]
+
+
+# Extract the columns name to include it on data sets SIREN2,3,4,5 that do not include a header
+name <- c(colnames(SIREN1))
+
+
+## Sub-set 2
+#i)
+SIREN2 <- fread(file="~/rprog/sirc-17804_9075_14209_201710_L_M_20171101_030132835.csv",sep=';',fill=TRUE ,header=FALSE ,nrows = 2500000, skip=2500000, col.names = name)
+# Read 2500000 rows and 100 (of 100) columns from 8.068 GB file in 00:00:56
+
+#ii)
+SIREN2 <- SIREN2[order(SIREN,DATEMAJ)][!duplicated(SIREN, fromLast = TRUE)][,SIREN:= as.integer(SIREN)]
+
+
+#iii)
+setkey(SIREN2, SIREN)
+SIREN2 <- SIREN2[SIREN2$SIREN %in% CNIL$SIREN]
+
+
+
+## Sub-set 3
+#i)
+SIREN3 <- fread(file="~/rprog/sirc-17804_9075_14209_201710_L_M_20171101_030132835.csv",sep=';',fill=TRUE ,header=FALSE ,nrows = 2500000, skip=5000000, col.names = name)
+# Read 2500000 rows and 100 (of 100) columns from 8.068 GB file in 00:01:04
+
+#ii) 
+SIREN3 <- SIREN3[order(SIREN,DATEMAJ)][!duplicated(SIREN, fromLast = TRUE)][,SIREN:= as.integer(SIREN)]
+
+
+#iii)
+setkey(SIREN3, SIREN)
+SIREN3 <- SIREN3[SIREN3$SIREN %in% CNIL$SIREN]
+
+
+
+##Sub-set 4 
+#i)
+SIREN4 <- fread(file="~/rprog/sirc-17804_9075_14209_201710_L_M_20171101_030132835.csv",sep=';',fill=TRUE ,header=FALSE ,nrows = 2500000, skip=7500000, col.names = name)
+# Read 2500000 rows and 100 (of 100) columns from 8.068 GB file in 00:01:15
+
+#ii)
+SIREN4 <- SIREN4[order(SIREN,DATEMAJ)][!duplicated(SIREN, fromLast = TRUE)][,SIREN:= as.integer(SIREN)]
+
+
+#iii)
+setkey(SIREN4, SIREN)
+SIREN4 <- SIREN4[SIREN4$SIREN %in% CNIL$SIREN]
+
+
+##Sub-set 5
+#i)
+SIREN5 <- fread(file="~/rprog/sirc-17804_9075_14209_201710_L_M_20171101_030132835.csv",sep=';',fill=TRUE ,header=FALSE , skip=10000000, col.names = name)
+# Read 831177 rows and 100 (of 100) columns from 8.068 GB file in 00:00:58
+
+#ii)
+SIREN5 <- SIREN5[order(SIREN,DATEMAJ)][!duplicated(SIREN, fromLast = TRUE)][,SIREN:= as.integer(SIREN)]
+
+
+#iii)
+setkey(SIREN5, SIREN)
+SIREN5 <- SIREN5[SIREN5$SIREN %in% CNIL$SIREN]
+
+#iv)  Put the sub sets into one 
+
+SIREN0 <- rbind(SIREN1,SIREN2,SIREN3,SIREN4,SIREN5)
+
+# delete possible duplicate from binding
+SIREN0 <- SIREN0[order(SIREN,DATEMAJ)][!duplicated(SIREN, fromLast = TRUE)][,SIREN:= as.integer(SIREN)]
+
+
+# export the reduced SIREN data set 
+write.csv(SIREN0, file="SIREN0.csv" , row.names= FALSE)
+
+end <- Sys.time()
+
+time <- end - begining
+time
+# Time difference of 22.77081 mins
+
+```
+
+
+```{r 3step3}
+
+# import the reduced SIREN data set
+
+SIREN0 <- fread("https://raw.githubusercontent.com/florianemarty/CHB/master/SIREN0.csv")
+
+#remove the rows where SIREN is missing in the CNIL data set
+CNIL <- CNIL[!is.na(SIREN)]
+
+
+# Define the column SIREN as key in the SIREN0 data set
+setkey(SIREN0, SIREN)
+
+#Merging of the two data sets
+theone <- CNIL[SIREN0, nomatch=0]
+
+```
+
+4. We can see on Figure 4 that Compagnies that nominated the CIL are mostly PME , Then GE and  ETI. It is confirmed by Figure 5 that shows that Compagnies that nominated the CIL have 10 to 49 employees.
+
+```{r 3step4 , results="hide"}
+
+#dt for fig 4
+fff <- theone[!CATEGORIE==""]
+
+#dt for fig 5
+ggg <- theone[,TEFEN:=as.factor(TEFEN)][!TEFEN=="NN"][!TEFEN=="00"]
+
+
+```
+
+
+
+
+
+\newpage
+# Tables and Figures
+```{r 1step3-tab}
+#get summary statistics
+kable(q3, caption='Step 3- Standard errors and summary statistics of Predictions')
+summary(predictions)[,2:4] 
+
+```
+
+```{r 2step3-fig, fig.cap = "Step 3 - Predictions of ll.fit.lowflex and ll.fit.highflex on training"}
+
+## 3.2) Plot of predictions -training
+ggplot(training) + geom_point(mapping = aes(x,y)) + 
+  theme_gray(base_size = 14) +
+  geom_line(mapping = aes(x, y= y.true) , color='black' ,size=0.5) +
+  geom_line(mapping = aes(x, y = y.ll.lowflex), color = "red") + 
+  geom_line(mapping = aes(x, y = y.ll.highflex), color = "blue")
+```
+
+
+```{r 2step5-fig,  fig.cap= "Step 5 - Predictions of ll.fit.lowflex and ll.fit.highflex on testing "}
+## 5.2) Plot of predictions - testing
+ggplot(testing) + geom_point(mapping = aes(x,y)) + 
+  theme_gray(base_size = 14) +
+  geom_line(mapping = aes(x, y = y.true) , color='black' ,size=0.5) +
+  geom_line(mapping = aes(x, y = y.ll.lowflex.test), color = "red") + 
+  geom_line(mapping = aes(x, y = y.ll.highflex.test), color = "blue")
+```
+
+```{r 2step10-fig,  fig.cap= "Step 10 - MSE on training and test data for different bandwidth of local linear regression"}
+
+## 10.2) Plot how the MSE on training data, and test data, change when the bandwidth increases 
+ggplot(mse.df) + 
+  theme_gray(base_size = 14) +
+  ylab("MSE") + 
+  geom_line(mapping = aes(x = bandwidth, y = mse.training), color = "blue") +
+  geom_line(mapping = aes(x = bandwidth, y = mse.testing), color = "orange")
+
+
+```
+
+
+\newpage
+```{r 3step2-table}
+kable(ObyD[,1:17], caption = "Organizations that have nominated a CNIL per department")
+kable(ObyD[,18:34])
+kable(ObyD[,35:50])
+kable(ObyD[,51:66])
+kable(ObyD[,67:81])
+kable(ObyD[,82:97])
+
+```
+
+```{r 3step4-fig, fig.cap="Step 4 -Histogram of the size of the companies that nominated a CIL by Category" , warning=FALSE}
+
+
+# Histogramme Catégorie
+
+ggplot(fff) +
+  geom_histogram(mapping=aes(fff$CATEGORIE), stat="count" , fill="#85d4d6") +
+  xlab("Organizations' Category") +
+  ylab("Number of organisations")
+
+
+```
+
+
+```{r 3step4-fig2, fig.cap="Step 4 -Histogram of the size of the companies that nominated a CI by salaried work forceL" , warning=FALSE}
+# Histogramme Tefen : Tranche d'effectif salarié de l'entreprise 
+ggplot() +
+  geom_histogram(mapping = aes(ggg$TEFEN), stat="count", fill="#85d4d6") +
+  xlab("Salaried workforce") +
+  ylab("Number of organisations") +
+  scale_x_discrete(breaks=c("01","02","03","11","12","21","22","31","32","41","42","51","52","53" ), 
+  labels=c("1 or 2","3 to 5", "6 to 9", "10 to 19", "20 to 49", "50 to 99" ,"100 to 199", "200 to 249", "250 to 499", "500 to 999" ,"1 000 to 1 999" ,"2 000 to 4 999", "5 000 to 9 999" , " 10 000 and more")) +
+  theme(axis.text.x = element_text( size=10, angle=90))
+```
